@@ -86,6 +86,26 @@ var eventPromises = [];
 
 var proposalRespTime=[];
 var orderRespTime=[];
+var commitRespTime=[];
+var responseTimeMap =new Map();
+var oMeasureFile;
+
+Date.prototype.Format = function (fmt) { //author: meizz
+    var o = {
+        "M+": this.getMonth() + 1, //??
+        "d+": this.getDate(), //?
+        "h+": this.getHours(), //??
+        "m+": this.getMinutes(), //?
+        "s+": this.getSeconds(), //?
+        "q+": Math.floor((this.getMonth() + 3) / 3), //??
+        "S": this.getMilliseconds() //??
+    };
+    if (/(y+)/.test(fmt)) fmt = fmt.replace(RegExp.$1, (this.getFullYear() + "").substr(4 - RegExp.$1.length));
+    for (var k in o)
+        if (new RegExp("(" + k + ")").test(fmt)) fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
+    return fmt;
+}
+
 
 // need to override the default key size 384 to match the member service backend
 // otherwise the client will not be able to decrypt the enrollment challenge
@@ -114,6 +134,7 @@ logger.info('[Nid:chan:org:id=%d:%s:%s:%d pte-execRequest] input parameters: uiF
 logger.info('[Nid:chan:org:id=%d:%s:%s:%d pte-execRequest] TLS: %s', Nid, channelName, org, pid, TLS.toUpperCase());
 logger.info('[Nid:chan:org:id=%d:%s:%s:%d pte-execRequest] targetPeers: %s', Nid, channelName, org, pid, targetPeers.toUpperCase());
 logger.info('[Nid:chan:org:id=%d:%s:%s:%d pte-execRequest] channelOrgName.length: %d, channelOrgName: %s', Nid, channelName, org, pid, channelOrgName.length, channelOrgName);
+
 
 var client = new hfc();
 var channel = client.newChannel(channelName);
@@ -241,6 +262,7 @@ for (i=0; i<uiContent.invoke.move.args.length; i++) {
     testInvokeArgs.push(uiContent.invoke.move.args[i]);
 }
 
+oMeasureFile ="PTEM_"+channelName+"_"+orgName+"_"+((new Date()).Format("yyyyMMddhhmmss"))+"_"+pid+".csv";
 var request_invoke;
 function getMoveRequest() {
     if ( ccType == 'ccchecker') {
@@ -1091,6 +1113,15 @@ function eventRegisterBlock() {
 
 }
 
+function appendMeasurement(bufferx){
+
+    fs.appendFile(oMeasureFile, bufferx, function(err) {
+        if (err) {
+            return logger.error(err);
+        }
+    })
+}
+
 var evtRcv=0;
 var evtCount=0;
 
@@ -1098,9 +1129,24 @@ function eventRegister(tx, cb) {
 
     var deployId = tx.getTransactionID();
     var eventPromises = [];
+    var commitEventStartTime= new Date().getTime();
+    var commitEventEndTime= new Date().getTime();
     eventHubs.forEach((eh) => {
+
         let txPromise = new Promise((resolve, reject) => {
             let handle = setTimeout(function(){eh.unregisterTxEvent(deployId);
+                commitEventEndTime= new Date().getTime();  //committer timeout
+                commitRespTime.push(commitEventEndTime-commitEventStartTime);
+                logger.error (" Commit timeout occurred, the tranx id=%s", deployId);
+                if ( responseTimeMap.has(deployId.toString())){
+                    var tempRespTimeStr=responseTimeMap.get(deployId.toString());
+                    tempRespTimeStr =tempRespTimeStr + "\n commit start time=" +commitEventStartTime.toString()+ " end time=" +commitEventEndTime.toString();
+                    responseTimeMap.set(deployId.toString(),tempRespTimeStr);
+                }else {
+                    var tempRespTimeStr ="\n commit start time=" +commitEventStartTime.toString()+ " end time=" +commitEventEndTime.toString();
+                    responseTimeMap.set(deployId.toString(),tempRespTimeStr);
+                }
+
             evtTimeoutCnt++;
             evtCount = evtRcv + evtTimeoutCnt;
             logger.info('[Nid:chan:org:id=%d:%s:%s:%d eventRegister] The invoke transaction (%s) timeout (%d).', Nid, channelName, org, pid, deployId.toString(), evtTimeoutCnt);
@@ -1119,15 +1165,41 @@ function eventRegister(tx, cb) {
             evtDisconnect();resolve()}, evtTimeout);
 
             eh.registerTxEvent(deployId.toString(), (tx, code) => {
+
+                var commitEventEndTime= new Date().getTime();
+                //tx is a transaction object
+                //code is a String parameter
+                /*
+                logger.error("====depolyId=",deployId.toString());
+                logger.error("====transaction object ====",tx);
+                logger.error("====code object ====",code);
+
+                */
+                commitRespTime.push(commitEventEndTime-commitEventStartTime);
                 clearTimeout(handle);
                 eh.unregisterTxEvent(deployId);
                 txidList.removeNode(deployId.toString());
                 evtRcv++;
+                logger.error("commit TXid=%s, start=%d, end=%d",deployId.toString(),commitEventStartTime,commitEventEndTime);
+
+
+                if ( responseTimeMap.has(deployId.toString())){
+                    var tempTransNode=responseTimeMap.get(deployId.toString());
+                    tempTransNode.commitStartTime=commitEventStartTime;
+                    tempTransNode.commitRespTime=commitEventEndTime-commitEventStartTime;
+                    responseTimeMap.set(deployId.toString(),tempTransNode);
+                }else {
+                    var tempTransNode={};
+                    tempTransNode.commitStartTime=commitEventStartTime;
+                    tempTransNode.commitRespTime=commitEventEndTime-commitEventStartTime;
+                    responseTimeMap.set(deployId.toString(),tempTransNode);
+                }
 
                 if (code !== 'VALID') {
                     logger.error('[Nid:chan:org:id=%d:%s:%s:%d eventRegister] The invoke transaction (%s) was invalid, code = ', Nid, channelName, org, pid, deployId.toString(), code);
                     reject();
                 } else {
+
                     if ( ( IDone == 1 ) && ( inv_m == evtRcv ) ) {
                         tCurr = new Date().getTime();
                         logger.info('[Nid:chan:org:id=%d:%s:%s:%d eventRegister] pte-exec:completed  Rcvd(sent)=%d(%d) %s(%s) in %d ms, timestamp: start %d end %d, #event timeout: %d, txid size: %d, Throughput=%d TPS', Nid, channelName, org, pid,  evtRcv, inv_m, transType, invokeType, tCurr-tLocal, tLocal, tCurr, evtTimeoutCnt, txidList.getSize(),(evtRcv/(tCurr-tLocal)*1000).toFixed(2));
@@ -1138,6 +1210,9 @@ function eventRegister(tx, cb) {
                         var  orderRespTimeSum=0;
                         var  orderRespTimeMax=0;
                         var  orderRespTimeMin=999999;
+                        var  commitRespTimeSum=0;
+                        var  commitRespTimeMax=0;
+                        var  commitRespTimeMin=999999;
                         for(var i=0; i<proposalRespTime.length;i++ ){
                              if(propRespTimeMax<proposalRespTime[i]) {propRespTimeMax=proposalRespTime[i]};
                              if(propRespTimeMin>proposalRespTime[i]) {propRespTimeMin=proposalRespTime[i]};
@@ -1150,12 +1225,42 @@ function eventRegister(tx, cb) {
                             orderRespTimeSum +=orderRespTime[i];
 
                         }
-                        logger.error("Nid:chan:org:id=%d:%s:%s:%d Final Proposal Response time, Max=%d, Min=%d, Avg=%d,  number=%d",Nid, channelName, org, pid, propRespTimeMax, propRespTimeMin,propRespTimeSum/proposalRespTime.length,proposalRespTime.length);
-                       // console.log ("proposalRespTimeOrig",proposalRespTime);
-                        console.log ("proposalRespTimeJoin-Nid:chan:org:id=%d:%s:%s:%d",Nid, channelName, org, pid,proposalRespTime.join(","));
-                        logger.error("Nid:chan:org:id=%d:%s:%s:%d Final Order Response Time Max=%d, Min=%d, Avg=%d, number =%d",Nid, channelName, org, pid,orderRespTimeMax,orderRespTimeMin,orderRespTimeSum/orderRespTime.length,orderRespTime.length);
-                      //  console.log ("orderRespTimeOrig",orderRespTime);
-                        console.log ("orderRespTimeJoin-Nid:chan:org:id=%d:%s:%s:%d",Nid, channelName, org, pid,orderRespTime.join(","));
+                        for(var i=0; i<commitRespTime.length;i++ ){
+                            if(commitRespTimeMax<commitRespTime[i]) {commitRespTimeMax=commitRespTime[i]};
+                            if(commitRespTimeMin>commitRespTime[i]) {commitRespTimeMin=commitRespTime[i]};
+                            commitRespTimeSum +=commitRespTime[i];
+
+                        }
+                        for (var [key, value] of responseTimeMap) {
+
+                            var buffer=util.format( "\nThe Key=%s"
+                                +"\n propsal starttime=%s, dur=%s"
+                                +"\n order   starttime=%s, dur=%s"
+                                +"\n commit  starttime=%s, dur=%s \n"
+                                ,key
+                                ,value.propStartTime, value.propRespTime
+                                ,value.orderStartTime, value.orderRespTime
+                                ,value.commitStartTime, value.commitRespTime);
+
+                            appendMeasurement(buffer);
+                        };
+
+
+                        var buffer=util.format("\n the responseTimeMap size is =======================%d",responseTimeMap.size);
+                        appendMeasurement(buffer);
+                        var buffer=util.format("\n Nid:chan:org:id=%d:%s:%s:%d Final Proposal Response time, Max=%d, Min=%d, Avg=%d,  number=%d",Nid, channelName, org, pid, propRespTimeMax, propRespTimeMin,propRespTimeSum/proposalRespTime.length,proposalRespTime.length);
+                        appendMeasurement(buffer);
+                        var buffer=util.format("\n Nid:chan:org:id=%d:%s:%s:%d Final Order Response Time Max=%d, Min=%d, Avg=%d, number =%d",Nid, channelName, org, pid,orderRespTimeMax,orderRespTimeMin,orderRespTimeSum/orderRespTime.length,orderRespTime.length);
+                        appendMeasurement(buffer);
+                        var buffer=util.format("\n Nid:chan:org:id=%d:%s:%s:%d Final Commit Response Time Max=%d, Min=%d, Avg=%d, number =%d",Nid, channelName, org, pid,commitRespTimeMax,commitRespTimeMin,commitRespTimeSum/commitRespTime.length,commitRespTime.length);
+                        appendMeasurement(buffer);
+
+                        var buffer=util.format("\n proposalRespTimeJoin-Nid:chan:org:id=%d:%s:%s:%d,  ",Nid, channelName, org, pid,proposalRespTime.join(","));
+                        appendMeasurement(buffer);
+                        var buffer= util.format("\n orderRespTimeJoin-Nid:chan:org:id=%d:%s:%s:%d,  ",Nid, channelName, org, pid,orderRespTime.join(","));
+                        appendMeasurement(buffer);
+                        var buffer=util.format("\n commitRespTimeJoin-Nid:chan:org:id=%d:%s:%s:%d,  ",Nid, channelName, org, pid,commitRespTime.join(","));
+                        appendMeasurement(buffer);
 
                         if (invokeCheck.toUpperCase() == 'TRUE') {
                             arg0 = keyStart + inv_m - 1;
@@ -1180,6 +1285,7 @@ function eventRegister(tx, cb) {
         eventPromises.push(txPromise);
     });
 
+    // appendMeasurement("\n Before exit eventRegister time="+(new Date().getTime()).toString());
     cb(eventPromises);
 }
 
@@ -1526,13 +1632,80 @@ function invoke_move_const(freq) {
 
     var t1 = new Date().getTime();
     getMoveRequest();
+    /////////////////////
+    /**********************
+    appendMeasurement("\n Start proposal request, current time is = "+ (new Date()).toDateString());
+    appendMeasurement("\n TXId="+request_invoke.txId.getTransactionID());
+    appendMeasurement("\n Proposal Request Args length="+request_invoke.args.length);
+    for (var i=0; i<request_invoke.args.length;i++){
+        appendMeasurement("\n Proposal arg["+i+"] size="+request_invoke.args[i].length+ " cont=>"+request_invoke.args[i]);
+    }
+     ******************/
+    /**** not provided targets, the list peer added into this channel will be used
+    appendMeasurement("\n Target Peers number ="+request_invoke.targets.length);
+    for (var i=0; i<request_invoke.targets.length;i++){
+        appendMeasurement("\n Target["+i+"]="+request_invoke.targets[i].url);
+    }
+    *****/
     var proposalStartTime= new Date().getTime();
     channel.sendTransactionProposal(request_invoke)
     .then((results) => {
         var proposalEndTime= new Date().getTime();
-        //logger.error("The transaction proposal time is ==%d ms ,transaction id=%s",proposalEndTime- proposalStartTime, tx_id);
+
+        logger.error("\n proposal TXid=%s, start timestamp=%d, end timestamp=%d , dur=%d ms", tx_id,proposalStartTime,proposalEndTime,proposalEndTime-proposalStartTime);
         proposalRespTime.push(proposalEndTime- proposalStartTime);
+
+        if ( responseTimeMap.has(request_invoke.txId.getTransactionID())){
+            var  tempTransNode= responseTimeMap.get(request_invoke.txId.getTransactionID()) ;
+            tempTransNode.propStartTime=proposalStartTime;
+            tempTransNode.propRespTime=proposalEndTime-proposalStartTime;
+            responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
+        }else {
+            var tempRespTimeStr ="\n proposal start time=" +proposalStartTime.toString()+ " end time=" +proposalEndTime.toString();
+            var tempTransNode={};
+            tempTransNode.propStartTime=proposalStartTime;
+            tempTransNode.propRespTime=proposalEndTime-proposalStartTime;
+            responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
+        }
         var proposalResponses = results[0];
+        /**********/
+        //sendTransactionProposal(request, timeout) Returns:
+        // A Promise for the ProposalResponseObject
+        //index:0	array	Array of ProposalResponse objects from the endorsing peers
+        //index:1	Object	The original Proposal object needed when sending the transaction request to the orderer
+        // ===>ProposalResponse
+        //version	number
+        //timestamp	Timestamp	Time the proposal was created by the submitter
+        //response	Response
+        //payload	Array.<byte>	The payload of the response. It is the encoded bytes of the "ProposalResponsePayload" protobuf message
+        //endorsement	Endorsement	The endorsement of the proposal, basically the endorser's signature over the payload
+
+        //logger.error("\n Proposal Response returned , original proposal object=",results[1]);
+        //big size of original proposal
+        /***********************
+        appendMeasurement("\n Proposal Response returned , the TXID="+request_invoke.txId.getTransactionID());
+        appendMeasurement("\n Proposal Response returned , the results size="+results.length);
+        for (var i=0; i<results.length;i++){
+            appendMeasurement("\n Proposal Response returned , the results["+i+"]="+results[i]);
+
+        }
+        appendMeasurement("\n Proposal Response returned , original proposal object="+results[1].length);
+
+        appendMeasurement("\n The Response object number="+ results[0].length);
+
+        for (var respIndex=0; respIndex<results[0].length; respIndex++){
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].version="+ results[0][respIndex].version);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].timestamp="+ results[0][respIndex].timestamp);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].response status="+ results[0][respIndex].response.status);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].response message="+ results[0][respIndex].response.message);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].endorsement.endorser="+ results[0][respIndex].endorsement.endorser);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].endorsement.signature="+ results[0][respIndex].endorsement.signature);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].payload size="+ (results[0][respIndex].payload).length);
+            appendMeasurement(" \n The Response results[0]["+ respIndex +"].payload="+ results[0][respIndex].payload);
+        }
+
+         *********/
+        /**********/
             if ( results[0][0].response && results[0][0].response.status != 200 ) {
                 logger.info('[Nid:chan:org:id=%d:%s:%s:%d invoke_move_const] failed to sendTransactionProposal status: %d', Nid, channelName, org, pid, results[0][0].response.status);
                 if (peerFO == 'TRUE') {
@@ -1546,11 +1719,32 @@ function invoke_move_const(freq) {
             eventRegister(tx_id, function(sendPromise) {
                 var orderStartTime= new Date().getTime();
                 var sendPromise = channel.sendTransaction(txRequest);
+               // appendMeasurement("\n In Move constant -- eventRegister in order(function) time="+(new Date().getTime()).toString());
+               // appendMeasurement("\n In Move constant -- eventRegister sent content to order ="+txRequest);
                 return Promise.all([sendPromise].concat(eventPromises))
                 .then((results) => {
                     var orderEndTime= new Date().getTime();
-                  //  logger.error("The transaction order time is ==%d ms ,transaction id=%s",orderEndTime- orderStartTime, tx_id);
                     orderRespTime.push(orderEndTime- orderStartTime);
+                    logger.error(" order TXid=%s, start time=%d, end Time=%d", tx_id.getTransactionID(),orderStartTime,orderEndTime);
+
+                    if ( responseTimeMap.has(request_invoke.txId.getTransactionID())){
+                        var  tempTransNode= responseTimeMap.get(request_invoke.txId.getTransactionID()) ;
+                        tempTransNode.orderStartTime=orderStartTime;
+                        tempTransNode.orderRespTime=orderEndTime-orderStartTime;
+                        responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
+                    }else {
+                        var tempRespTimeStr ="\n proposal start time=" +proposalStartTime.toString()+ " end time=" +proposalEndTime.toString();
+                        var tempTransNode={};
+                        tempTransNode.orderStartTime=orderStartTime;
+                        tempTransNode.orderRespTime=orderEndTime-orderStartTime;
+                        responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
+                    }
+
+                    /**********/
+                   // logger.error("order promise results length====",results.length);
+                   // logger.error("order promise results[0] objects====",results[0]);
+                   // logger.error("order promise results ====",results);
+                    /**********/
                     if ( results[0].status != 'SUCCESS' ) {
                         logger.info('[Nid:chan:org:id=%d:%s:%s:%d invoke_move_const] failed to sendTransaction status: %j ', Nid, channelName, org, pid, results[0]);
                         if (ordererFO == 'TRUE') {
