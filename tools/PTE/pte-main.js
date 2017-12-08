@@ -1107,6 +1107,21 @@ function queryBlockchainInfo(channel, client, org) {
 
                 totalLength = totalLength + block.data.data.length;
                 logger.info('[queryBlockchainInfo] block:Length:accu length= %d:%d:%d', block.header.number, block.data.data.length, totalLength);
+                //added for every block , get every transcation information
+                var txStatusCodes = block.metadata.metadata[2];
+                for (var i=0; i<block.data.data.length;i++)
+                {
+                    var typeStr = block.data.data[i].payload.header.channel_header.type;
+                    var versionInt = block.data.data[i].payload.header.channel_header.version;
+                    var timestampTime = block.data.data[i].payload.header.channel_header.timestamp;
+                    var channel_idStr = block.data.data[i].payload.header.channel_header.channel_id;
+                    var tx_idStr = block.data.data[i].payload.header.channel_header.tx_id;
+                    var epochInt = block.data.data[i].payload.header.channel_header.epoch;
+                    var val_code = txStatusCodes[i];
+                    logger.error("\n Data[%d]==> type=%s,version=%s,timestamp=%d,channel_id=%s,txid=%s,epoch=%s,StatusCode=%s",
+                        i,typeStr,versionInt,(new Date(timestampTime)).getTime(),channel_idStr,tx_idStr,epochInt,val_code);
+                   // logger.error("\n timestamp", timestampTime);
+                }
             });
             logger.info('[queryBlockchainInfo] blocks= %d:%d, totalLength= %j', sBlock, eBlock, totalLength);
             process.exit();

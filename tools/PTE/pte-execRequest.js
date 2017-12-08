@@ -1180,7 +1180,7 @@ function eventRegister(tx, cb) {
                 eh.unregisterTxEvent(deployId);
                 txidList.removeNode(deployId.toString());
                 evtRcv++;
-                logger.error("commit TXid=%s, start=%d, end=%d",deployId.toString(),commitEventStartTime,commitEventEndTime);
+                logger.error("ehAddr= %s, commit TXid=%s, start=%d, end=%d",eh.getPeerAddr(),deployId.toString(),commitEventStartTime,commitEventEndTime);
 
 
                 if ( responseTimeMap.has(deployId.toString())){
