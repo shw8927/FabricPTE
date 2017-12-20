@@ -88,6 +88,7 @@ var proposalRespTime=[];
 var orderRespTime=[];
 var commitRespTime=[];
 var responseTimeMap =new Map();
+var globalTXIndex=0;
 var oMeasureFile;
 
 Date.prototype.Format = function (fmt) { //author: meizz
@@ -1115,11 +1116,12 @@ function eventRegisterBlock() {
 
 function appendMeasurement(bufferx){
 
-    fs.appendFile(oMeasureFile, bufferx, function(err) {
+    fs.appendFileSync(oMeasureFile, bufferx,  { encoding: 'utf8', mode: 438, flag: 'a' } );
+    /*{
         if (err) {
             return logger.error(err);
         }
-    })
+    })*/
 }
 
 var evtRcv=0;
@@ -1186,11 +1188,13 @@ function eventRegister(tx, cb) {
                 if ( responseTimeMap.has(deployId.toString())){
                     var tempTransNode=responseTimeMap.get(deployId.toString());
                     tempTransNode.commitStartTime=commitEventStartTime;
+                    tempTransNode.commitEndTime=commitEventEndTime;
                     tempTransNode.commitRespTime=commitEventEndTime-commitEventStartTime;
                     responseTimeMap.set(deployId.toString(),tempTransNode);
                 }else {
                     var tempTransNode={};
                     tempTransNode.commitStartTime=commitEventStartTime;
+                    tempTransNode.commitEndTime=commitEventEndTime;
                     tempTransNode.commitRespTime=commitEventEndTime-commitEventStartTime;
                     responseTimeMap.set(deployId.toString(),tempTransNode);
                 }
@@ -1231,19 +1235,128 @@ function eventRegister(tx, cb) {
                             commitRespTimeSum +=commitRespTime[i];
 
                         }
+                        var buffer=util.format( "\nTX_ID"
+                            +" ,ProposalDur"
+                            +" ,orderDur"
+                            +" ,commitDur"
+                            +",totalDur");
+                        appendMeasurement(buffer);
+
+                        var timeStampMap =new Map();
+
+
                         for (var [key, value] of responseTimeMap) {
 
-                            var buffer=util.format( "\nThe Key=%s"
-                                +"\n propsal starttime=%s, dur=%s"
-                                +"\n order   starttime=%s, dur=%s"
-                                +"\n commit  starttime=%s, dur=%s \n"
-                                ,key
-                                ,value.propStartTime, value.propRespTime
-                                ,value.orderStartTime, value.orderRespTime
-                                ,value.commitStartTime, value.commitRespTime);
+                            var buffer=util.format( "\n %s"
+                                +" ,%s"
+                                +" ,%s"
+                                +" ,%s"
+                                +",%s"
+                                ,value.TX_index
+                                ,value.propRespTime
+                                , value.orderRespTime
+                                , value.commitRespTime
+                            ,value.commitRespTime+value.propStartTime+value.orderRespTime);
 
                             appendMeasurement(buffer);
+
+                            var pStartTimestamp=Math.floor(value.propStartTime/1000);
+                            var oStartTimestamp=Math.floor(value.orderStartTime/1000);
+                            var cStartTimestamp=Math.floor(value.commitStartTime/1000);
+                            var pEndTimestamp=Math.floor(value.propEndTime/1000);
+                            var oEndTimestamp=Math.floor(value.orderEndTime/1000);
+                            var cEndTimestamp=Math.floor(value.commitEndTime/1000);
+
+
+                            if ( timeStampMap.has(pStartTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(pStartTimestamp.toString());
+                                tempTimestampNode.sentProposalNumber=tempTimestampNode.sentProposalNumber+1;
+                                timeStampMap.set(pStartTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.sentProposalNumber=1;
+                                timeStampMap.set(pStartTimestamp.toString(),tempTimestampNode);
+                            };
+
+                            if ( timeStampMap.has(oStartTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(oStartTimestamp.toString());
+                                tempTimestampNode.sentOrderNumber=tempTimestampNode.sentOrderNumber+1;
+                                timeStampMap.set(oStartTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.sendOrderNumber=1;
+                                timeStampMap.set(oStartTimestamp.toString(),tempTimestampNode);
+                            };
+
+                            if ( timeStampMap.has(cStartTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(cStartTimestamp.toString());
+                                tempTimestampNode.sentCommitNumber=tempTimestampNode.sentCommitNumber+1;
+                                timeStampMap.set(cStartTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.sendCommitNumber=1;
+                                timeStampMap.set(cStartTimestamp.toString(),tempTimestampNode);
+                            };
+
+                            if ( timeStampMap.has(pEndTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(pEndTimestamp.toString());
+                                tempTimestampNode.receiveProposalNumber=tempTimestampNode.receiveProposalNumber+1;
+                                timeStampMap.set(pEndTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.receiveProposalNumber=1;
+                                timeStampMap.set(pEndTimestamp.toString(),tempTimestampNode);
+                            };
+
+                            if ( timeStampMap.has(oEndTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(oEndTimestamp.toString());
+                                tempTimestampNode.receiveOrderNumber=tempTimestampNode.receiveOrderNumber+1;
+                                timeStampMap.set(oEndTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.receiveOrderNumber=1;
+                                timeStampMap.set(oEndTimestamp.toString(),tempTimestampNode);
+                            };
+
+                            if ( timeStampMap.has(cEndTimestamp.toString())){
+                                var tempTimestampNode=timeStampMap.get(cEndTimestamp.toString());
+                                tempTimestampNode.receiveCommitNumber=tempTimestampNode.receiveCommitNumber+1;
+                                timeStampMap.set(cEndTimestamp.toString(),tempTimestampNode);
+                            }else {
+                                var tempTimestampNode={sentProposalNumber:0,sentOrderNumber:0,sentCommitNumber:0,
+                                    receiveProposalNumber:0,receiveOrderNumber:0,receiveCommitNumber:0};
+                                tempTimestampNode.receiveCommitNumber=1;
+                                timeStampMap.set(cEndTimestamp.toString(),tempTimestampNode);
+                            };
+
+
+
+
+
                         };
+
+                        var buffer=util.format("\n Timestamp, SPropNum, RPropNum,SOrderNumber,RorderNumber,RcommitNum ");
+
+                        appendMeasurement(buffer);
+                        appendMeasurement("\n timestamp, PStartnumber, OStartNumber, CStartNumber, CPropNum, CorderNUm,CEndNumber");
+
+                        for (var [key, value] of timeStampMap) {
+
+                            var buffer = util.format("\n %s, %s, %s, %s ,%s, %s, %s",(new Date(key*1000)).Format("hh:mm:ss"),value.sentProposalNumber,value.sentOrderNumber,value.sentCommitNumber,
+                                value.receiveProposalNumber,value.receiveOrderNumber,value.receiveCommitNumber);
+
+                            appendMeasurement(buffer);
+
+                        }
+
+
+
+
 
 
                         var buffer=util.format("\n the responseTimeMap size is =======================%d",responseTimeMap.size);
@@ -1651,19 +1764,20 @@ function invoke_move_const(freq) {
     channel.sendTransactionProposal(request_invoke)
     .then((results) => {
         var proposalEndTime= new Date().getTime();
-
-        logger.error("\n proposal TXid=%s, start timestamp=%d, end timestamp=%d , dur=%d ms", tx_id,proposalStartTime,proposalEndTime,proposalEndTime-proposalStartTime);
         proposalRespTime.push(proposalEndTime- proposalStartTime);
 
         if ( responseTimeMap.has(request_invoke.txId.getTransactionID())){
             var  tempTransNode= responseTimeMap.get(request_invoke.txId.getTransactionID()) ;
             tempTransNode.propStartTime=proposalStartTime;
+            tempTransNode.propEndTime=proposalEndTime;
             tempTransNode.propRespTime=proposalEndTime-proposalStartTime;
             responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
         }else {
             var tempRespTimeStr ="\n proposal start time=" +proposalStartTime.toString()+ " end time=" +proposalEndTime.toString();
             var tempTransNode={};
+            tempTransNode.TX_index=globalTXIndex++;
             tempTransNode.propStartTime=proposalStartTime;
+            tempTransNode.propEndTime=proposalEndTime;
             tempTransNode.propRespTime=proposalEndTime-proposalStartTime;
             responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
         }
@@ -1725,17 +1839,19 @@ function invoke_move_const(freq) {
                 .then((results) => {
                     var orderEndTime= new Date().getTime();
                     orderRespTime.push(orderEndTime- orderStartTime);
-                    logger.error(" order TXid=%s, start time=%d, end Time=%d", tx_id.getTransactionID(),orderStartTime,orderEndTime);
+                  //  logger.error(" order TXid=%s, start time=%d, end Time=%d", tx_id.getTransactionID(),orderStartTime,orderEndTime);
 
                     if ( responseTimeMap.has(request_invoke.txId.getTransactionID())){
                         var  tempTransNode= responseTimeMap.get(request_invoke.txId.getTransactionID()) ;
                         tempTransNode.orderStartTime=orderStartTime;
+                        tempTransNode.orderEndTime=orderEndTime;
                         tempTransNode.orderRespTime=orderEndTime-orderStartTime;
                         responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
                     }else {
                         var tempRespTimeStr ="\n proposal start time=" +proposalStartTime.toString()+ " end time=" +proposalEndTime.toString();
                         var tempTransNode={};
                         tempTransNode.orderStartTime=orderStartTime;
+                        tempTransNode.orderEndTime=orderEndTime;
                         tempTransNode.orderRespTime=orderEndTime-orderStartTime;
                         responseTimeMap.set(request_invoke.txId.getTransactionID(),tempTransNode);
                     }

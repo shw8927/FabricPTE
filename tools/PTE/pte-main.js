@@ -25,6 +25,7 @@
 // This is an end-to-end test that focuses on exercising all parts of the fabric APIs
 // in a happy-path scenario
 'use strict';
+var co = require('co');
 
 var path = require('path');
 
@@ -48,6 +49,9 @@ var Client = require('fabric-client/lib/Client.js');
 utils.setConfigSetting('crypto-keysize', 256);
 
 const child_process = require('child_process');
+
+var responseTimeTPSMap =new Map();
+var chainCodeMap4BlockMap=new Map();
 
 var webUser = null;
 var tmp;
@@ -162,6 +166,9 @@ function clientNewOrderer(client, org) {
 function chainAddOrderer(channel, client, org) {
     logger.info('[chainAddOrderer] channel name: ', channel.getName());
     var ordererID = ORGS[org].ordererID;
+    if (channel.getOrderers().length>0){
+        return;
+    }
     if (TLS.toUpperCase() == 'ENABLED') {
         var caRootsPath = path.join(goPath, ORGS['orderer'][ordererID].tls_cacerts);
         var data = fs.readFileSync(caRootsPath);
@@ -345,6 +352,9 @@ function channelAddQIPeer(channel, client, qorg, qpeer) {
     logger.info('[channelAddQIPeer] qorg %s qpeer: ', qorg,qpeer);
     var peerTmp;
     var eh;
+    if (channel.getPeers().length>0 ){
+        return;
+    }
     for (let key in ORGS[qorg]) {
         if (ORGS[qorg].hasOwnProperty(key)) {
             if (key.indexOf(qpeer) === 0) {
@@ -1041,7 +1051,12 @@ function joinOneChannel(channel, client, org) {
 
 }
 
-function queryBlockchainInfo(channel, client, org) {
+function queryBlockchainInfoBAK(channel, client, org) {
+
+    var startTimestamp4QueryBlock=0;
+    var endTimestamp4QueryBlock=0;
+    var totalSuccessTxNum=0;
+    var totalFailedTxNum=0;
 
     logger.info('[queryBlockchainInfo] channel (%s)', channelName);
     var username = ORGS[org].username;
@@ -1104,33 +1119,456 @@ function queryBlockchainInfo(channel, client, org) {
     }).then((block) => {
             var totalLength=0;
             block.forEach(function(block){
+                var endorserTxNum=0;
+                var nonEndorserTxNum=0;
+                var succEndorserTxNum=0;
+                var failedEndorserTxNum=0;
+                var blkStartTimestamp=0;
+                var blkEndTimestamp=0;
 
-                totalLength = totalLength + block.data.data.length;
-                logger.info('[queryBlockchainInfo] block:Length:accu length= %d:%d:%d', block.header.number, block.data.data.length, totalLength);
-                //added for every block , get every transcation information
+
+
                 var txStatusCodes = block.metadata.metadata[2];
                 for (var i=0; i<block.data.data.length;i++)
                 {
                     var typeStr = block.data.data[i].payload.header.channel_header.type;
                     var versionInt = block.data.data[i].payload.header.channel_header.version;
-                    var timestampTime = block.data.data[i].payload.header.channel_header.timestamp;
+                    var txTimestampTime = block.data.data[i].payload.header.channel_header.timestamp;
                     var channel_idStr = block.data.data[i].payload.header.channel_header.channel_id;
                     var tx_idStr = block.data.data[i].payload.header.channel_header.tx_id;
                     var epochInt = block.data.data[i].payload.header.channel_header.epoch;
                     var val_code = txStatusCodes[i];
+
+                    if (((new Date(txTimestampTime)).getTime() <(new Date(blkStartTimestamp)).getTime()) ||(blkStartTimestamp==0)){
+                        blkStartTimestamp=txTimestampTime;
+                    }
+                    if (((new Date(txTimestampTime)).getTime() >(new Date(blkEndTimestamp)).getTime()) ||(blkEndTimestamp==0)){
+                        blkEndTimestamp=txTimestampTime;
+                    }
+                    if ( responseTimeTPSMap.has(txTimestampTime)){
+                        var transactionNum=responseTimeTPSMap.get(txTimestampTime);
+                        transactionNum =transactionNum + 1;
+                        responseTimeTPSMap.set(txTimestampTime,transactionNum);
+                    }else {
+                        var transactionNum = 1;
+                        responseTimeTPSMap.set(txTimestampTime,transactionNum);
+                    }
+
+                    if (((new Date(txTimestampTime)).getTime() <(new Date(startTimestamp4QueryBlock).getTime() )) ||(startTimestamp4QueryBlock ==0))
+                    {
+                        startTimestamp4QueryBlock = txTimestampTime;
+                        logger.info("start <startblock, start=",txTimestampTime ," startblock=",startTimestamp4QueryBlock);
+                    }
+
+                    if (( (new Date(txTimestampTime)).getTime() > (new Date(endTimestamp4QueryBlock)).getTime() ) ||(endTimestamp4QueryBlock ==0))
+                    {
+                        endTimestamp4QueryBlock = txTimestampTime;
+                    }
+
+                    /*
+                     //added for every block , get every transaction information
+                    logger.info("\n===========Detail information of  TX==========\n");
                     logger.error("\n Data[%d]==> type=%s,version=%s,timestamp=%d,channel_id=%s,txid=%s,epoch=%s,StatusCode=%s",
                         i,typeStr,versionInt,(new Date(timestampTime)).getTime(),channel_idStr,tx_idStr,epochInt,val_code);
-                   // logger.error("\n timestamp", timestampTime);
+                    */
+
+                    if (typeStr =='ENDORSER_TRANSACTION') {
+                        endorserTxNum =endorserTxNum+1;
+
+                        var tx_input = block.data.data[i].payload.data.actions[0].payload.chaincode_proposal_payload.input;
+                        var action0Extension=block.data.data[i].payload.data.actions[0].payload.action.proposal_response_payload.extension;
+                        /* ====detail output begin for endorser transaction==========
+                        logger.info("\n transaction input length=",tx_input.length);
+                        // logger.info("Transaction response payload chaincode id = ",block.data.data[i].payload.data.actions[0].payload.action.proposal_response_payload.extension.results.ns_rwset[0].rwset.reads[0].key );
+                        // logger.info("Transaction response payload results.ns_rwset = ",action0Extension.results.ns_rwset);
+                        logger.info("\nTransaction response payload results rwset length = ",action0Extension.results.ns_rwset.length );
+                        //  logger.info("\nTransaction response payload response.status =",action0Extension.response.status );
+                        // logger.info("Transaction response payload  events =",block.data.data[i].payload.data.actions[0].payload.action.proposal_response_payload.extension.events );
+                        //logger.info("Transaction actions number=",block.data.data[i].payload.data.actions.length);
+                        // logger.info("Input string=",String.fromCharCode.apply(String, tx_input));
+                        // logger.info("Transaction payload actions.proposal_response.extension.results=",block.data.data[i].payload.data.actions[0].payload.chaincode_proposal_payload.extension.results.data_model);
+
+                          ====detail output end========== */
+
+                        for (var rwset_index=0; rwset_index<action0Extension.results.ns_rwset.length;rwset_index++){
+                            if (action0Extension.results.ns_rwset[rwset_index].namespace=="lscc"){
+                                var tmpChainCodeStr=action0Extension.results.ns_rwset[rwset_index].rwset.reads[0].key;
+
+                                if ( chainCodeMap4BlockMap.has(tmpChainCodeStr)){
+                                    var tmpChainCodeObject=chainCodeMap4BlockMap.get(tmpChainCodeStr)
+                                    tmpChainCodeObject.transactionNum =tmpChainCodeObject.transactionNum + 1;
+                                    chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
+                                }else {
+                                    var tmpChainCodeObject = {};
+                                    tmpChainCodeObject.transactionNum = 1;
+                                    chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
+                                }
+
+                            }
+                        }
+                        if (200!=action0Extension.response.status){
+                            failedEndorserTxNum =failedEndorserTxNum+1;
+                            totalFailedTxNum=totalFailedTxNum+1;
+                        }else {
+                            succEndorserTxNum =succEndorserTxNum+1;
+                            totalSuccessTxNum=totalSuccessTxNum+1;
+                        }
+
+
+                    }else {
+                        logger.info("Not a ENDORSER_TRANSACTION");
+                        nonEndorserTxNum=nonEndorserTxNum+1;
+                    }
                 }
+
+                totalLength = totalLength + block.data.data.length;
+                /*
+                logger.info('[queryBlockchainInfo] block:Length:accu length= %d:%d:%d', block.header.number, block.data.data.length, totalLength);
+                logger.info('\n[queryBlockchainInfo] Current Block NO.=%s,  %s transaction in this block ', block.header.number, block.data.data.length);
+
+                logger.info("\nThe block statistic infor: \n start timestamp=%s ,end timestamp=%s, duration=%d ms "
+                    +"\n total Tx=%d, endorserTx=%d ,nonEndorserTx=%d"
+                    +"\n success endorserTx=%d ,invalid EndorserTx=%d",
+                    (new Date(startTimestamp)), (new Date(endTimestamp)), (new Date(endTimestamp).getTime()-new Date(startTimestamp).getTime())
+                    ,block.data.data.length,endorserTxNum,nonEndorserTxNum
+                    ,succEndorserTxNum,failedEndorserTxNum);
+               */
+
+
             });
-            logger.info('[queryBlockchainInfo] blocks= %d:%d, totalLength= %j', sBlock, eBlock, totalLength);
+
+        logger.info("\n==============Total summary============================\n");
+        logger.info('\n[queryBlockchainInfo] start blocks= %d: end block=%d, totalLength=%d ,\n startTime =%s, end Time=%s, \n totalInterval=%s MS ,successful TxNum=%d, failed TxNum=%d',
+                sBlock, eBlock, totalLength,startTimestamp4QueryBlock,endTimestamp4QueryBlock,(new Date(endTimestamp4QueryBlock).getTime())-  (new Date(startTimestamp4QueryBlock).getTime()),totalSuccessTxNum,totalFailedTxNum);
+
+        for (var [key, value] of chainCodeMap4BlockMap) {
+
+            var buffer = util.format("\n Chaincode=%s"
+                + " ,TransactionNum=%s"
+                , key
+                , value.transactionNum);
+               logger.info(buffer);
+        }
+
+        for (var [key, value] of responseTimeTPSMap) {
+
+            var buffer = util.format("\n Timestamp=%s"
+                + " ,Transaction=%s"
+                , key
+                , value);
+           logger.info(buffer);
+        }
+
             process.exit();
 
     }).catch((err) => {
             throw new Error(err.stack ? err.stack : err);
     });
 
+
 }
+
+var startTimestamp4QueryBlock=0;
+var endTimestamp4QueryBlock=0;
+var totalSuccessTxNum=0;
+var totalFailedTxNum=0;
+function getBlockDetail(block) {
+    logger.info("\n********Block information ***********");
+    logger.info('\n[queryBlockchainInfo] Current Block NO.=%s,  %s transaction in this block ', block.header.number, block.data.data.length);
+    var endorserTxNum=0;
+    var nonEndorserTxNum=0;
+    var succEndorserTxNum=0;
+    var failedEndorserTxNum=0;
+    var blkStartTimestamp=0;
+    var blkEndTimestamp=0;
+
+    for (var i=0; i<block.data.data.length;i++)
+    {
+        var typeStr = block.data.data[i].payload.header.channel_header.type;
+        var txTimestampTime = block.data.data[i].payload.header.channel_header.timestamp;
+
+
+        if (((new Date(txTimestampTime)).getTime() <(new Date(blkStartTimestamp)).getTime()) ||(blkStartTimestamp==0)){
+            blkStartTimestamp=txTimestampTime;
+        }
+        if (((new Date(txTimestampTime)).getTime() >(new Date(blkEndTimestamp)).getTime()) ||(blkEndTimestamp==0)){
+            blkEndTimestamp=txTimestampTime;
+        }
+        if ( responseTimeTPSMap.has(txTimestampTime)){
+            var transactionNum=responseTimeTPSMap.get(txTimestampTime);
+            transactionNum =transactionNum + 1;
+            responseTimeTPSMap.set(txTimestampTime,transactionNum);
+        }else {
+            var transactionNum = 1;
+            responseTimeTPSMap.set(txTimestampTime,transactionNum);
+        }
+
+        if (((new Date(txTimestampTime)).getTime() <(new Date(startTimestamp4QueryBlock).getTime() )) ||(startTimestamp4QueryBlock ==0))
+        {
+            startTimestamp4QueryBlock = txTimestampTime;
+        }
+
+        if (( (new Date(txTimestampTime)).getTime() > (new Date(endTimestamp4QueryBlock)).getTime() ) ||(endTimestamp4QueryBlock ==0))
+        {
+            endTimestamp4QueryBlock = txTimestampTime;
+        }
+
+
+        if (typeStr =='ENDORSER_TRANSACTION') {
+            endorserTxNum =endorserTxNum+1;
+
+            var tx_input = block.data.data[i].payload.data.actions[0].payload.chaincode_proposal_payload.input;
+            var action0Extension=block.data.data[i].payload.data.actions[0].payload.action.proposal_response_payload.extension;
+            var versionInt = block.data.data[i].payload.header.channel_header.version;
+            var channel_idStr = block.data.data[i].payload.header.channel_header.channel_id;
+            var tx_idStr = block.data.data[i].payload.header.channel_header.tx_id;
+            var epochInt = block.data.data[i].payload.header.channel_header.epoch;
+            var val_code = block.metadata.metadata[2][i];
+            var tmpChainCodeStr="";
+
+
+            for (var rwset_index=0; rwset_index<action0Extension.results.ns_rwset.length;rwset_index++){
+                if (action0Extension.results.ns_rwset[rwset_index].namespace=="lscc"){
+                    tmpChainCodeStr=action0Extension.results.ns_rwset[rwset_index].rwset.reads[0].key;
+
+                    if ( chainCodeMap4BlockMap.has(tmpChainCodeStr)){
+                        var tmpChainCodeObject=chainCodeMap4BlockMap.get(tmpChainCodeStr)
+                        tmpChainCodeObject.transactionNum =tmpChainCodeObject.transactionNum + 1;
+                        chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
+                    }else {
+                        var tmpChainCodeObject = {};
+                        tmpChainCodeObject.transactionNum = 1;
+                        chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
+                    }
+
+                }
+            }
+            if (200!=action0Extension.response.status){
+                failedEndorserTxNum =failedEndorserTxNum+1;
+                totalFailedTxNum=totalFailedTxNum+1;
+            }else {
+                succEndorserTxNum =succEndorserTxNum+1;
+                totalSuccessTxNum=totalSuccessTxNum+1;
+            }
+
+            if (false){
+                // ====detail output begin for endorser transaction==========
+                logger.info("\n===========Detail information of  TX==========\n");
+                logger.error("\n Data[%d]==> type=%s,version=%s,timestamp=%d,channel_id=%s,txid=%s,epoch=%s,StatusCode=%s",
+                    i,typeStr,versionInt,(new Date(txTimestampTime)).getTime(),channel_idStr,tx_idStr,epochInt,val_code);
+                logger.info("\nTransaction response payload chaincode id = ",tmpChainCodeStr );
+                logger.info("\n transaction input length=",tx_input.length);
+                logger.info("\nTransaction response payload response.status =",action0Extension.response.status );
+                logger.info("\nTransaction response payload  events =",block.data.data[i].payload.data.actions[0].payload.action.proposal_response_payload.extension.events );
+                logger.info("\nTransaction response payload results rwset length = ",action0Extension.results.ns_rwset.length );
+                //  logger.info("Transaction response payload results.ns_rwset = ",action0Extension.results.ns_rwset);
+                logger.info("Transaction actions number=",block.data.data[i].payload.data.actions.length);
+
+                // logger.info("Input string=",String.fromCharCode.apply(String, tx_input));
+
+            }
+
+
+
+        }else {
+            logger.info("Not a ENDORSER_TRANSACTION");
+            nonEndorserTxNum=nonEndorserTxNum+1;
+        }
+    }
+
+}
+
+var totalLength=0;
+function oneBlockQueryWithNext(channel,startBlockNumber, endBlockNumber) {
+    var qb = new Promise(function (resolve, reject) {
+        resolve(channel.queryBlock(startBlockNumber));
+    }).then(function (block) {
+        getBlockDetail(block);
+        totalLength = totalLength + block.data.data.length;
+        startBlockNumber ++;
+        if (startBlockNumber <= endBlockNumber){
+            oneBlockQueryWithNext(channel,startBlockNumber,endBlockNumber);
+        }
+        if (startBlockNumber>endBlockNumber){
+
+            logger.info("\n==============Total summary 12345============================\n");
+            logger.info('\n[queryBlockchainInfo] start blocks= %d: end block=%d, totalLength=%d ,\n startTime =%s, end Time=%s, \n totalInterval=%s MS ,successful TxNum=%d, failed TxNum=%d',
+                startBlockNumber, endBlockNumber, totalLength,startTimestamp4QueryBlock,endTimestamp4QueryBlock,(new Date(endTimestamp4QueryBlock).getTime())-  (new Date(startTimestamp4QueryBlock).getTime()),totalSuccessTxNum,totalFailedTxNum);
+
+            for (var [key, value] of chainCodeMap4BlockMap) {
+
+                var buffer = util.format("\n Chaincode=%s"
+                    + " ,TransactionNum=%s"
+                    , key
+                    , value.transactionNum);
+                logger.info(buffer);
+            }
+
+            for (var [key, value] of responseTimeTPSMap) {
+
+                var buffer = util.format("\n Timestamp=%s"
+                    + " ,Transaction=%s"
+                    , key
+                    , value);
+                   logger.info(buffer);
+            }
+
+        }
+
+    });
+
+}
+
+
+function chanelInitialize(channel, client, org, retBlkHeight) {
+
+    var username = ORGS[org].username;
+    var secret = ORGS[org].secret;
+    qOrg = uiContent.queryBlockOpt.org;
+    qPeer = uiContent.queryBlockOpt.peer;
+    ////////////////////
+
+    utils.setConfigSetting('key-value-store','fabric-client/lib/impl/FileKeyValueStore.js');
+    ////begin common with Chaincode init
+    var cryptoSuite = hfc.newCryptoSuite();
+    cryptoSuite.setCryptoKeyStore(hfc.newCryptoKeyStore({path: testUtil.storePathForOrg(Nid, orgName)}));
+    client.setCryptoSuite(cryptoSuite);
+
+    chainAddOrderer(channel, client, org);
+    ////end  common with Chaincode init
+
+    channelAddQIPeer(channel, client, qOrg, qPeer);
+
+    return Client.newDefaultKeyValueStore({
+        path: testUtil.storePathForOrg(orgName)
+    }).then( function (store) {
+        client.setStateStore(store);
+        return testUtil.getSubmitter(username, secret, client, true, Nid, org, svcFile);
+    }).then((admin) => {
+        logger.info('[queryBlockchainInfo] Successfully enrolled user \'admin\'');
+        the_user = admin;
+
+        return channel.initialize();
+    }).then((success) => {
+        logger.info('[queryBlockchainInfo] Successfully initialized channel');
+        return channel.queryInfo();
+    }).then((blockchainInfo) => {
+        var blockHeight = blockchainInfo.height - 1;
+        logger.info('Current block height='+blockchainInfo.height);
+        retBlkHeight.value=blockchainInfo.height - 1
+        return blockHeight;
+    });
+
+}
+
+function queryCurrentBlockHeight(channel, client, org,retBlockHeight){
+
+    //channel must be initialized
+    /*
+    var pb= channel.queryInfo().then((blockchainInfo) => {
+        var blockHeight = blockchainInfo.height - 1;
+        logger.info('Current block height='+blockchainInfo.height);
+        retBlockHeight.value =blockchainInfo.height-1;
+        return blockHeight;
+    });
+*/
+    return channel.queryInfo();
+   // Promise.all(qPromises);
+
+}
+
+
+
+function queryBlockchainInfo(channel, client, org) {
+
+    var startTimestamp4QueryBlock=0;
+    var endTimestamp4QueryBlock=0;
+    var totalSuccessTxNum=0;
+    var totalFailedTxNum=0;
+
+    logger.info('[queryBlockchainInfo] channel (%s)', channelName);
+    var username = ORGS[org].username;
+    var secret = ORGS[org].secret;
+    //logger.info('[queryBlockchainInfo] user=%s, secret=%s', username, secret);
+    sBlock = uiContent.queryBlockOpt.startBlock;
+    eBlock = uiContent.queryBlockOpt.endBlock;
+    qOrg = uiContent.queryBlockOpt.org;
+    qPeer = uiContent.queryBlockOpt.peer;
+    logger.info('[queryBlockchainInfo] query block info org:peer:start:end=%s:%s:%d:%d', qOrg, qPeer, sBlock, eBlock);
+
+    utils.setConfigSetting('key-value-store','fabric-client/lib/impl/FileKeyValueStore.js');
+    var cryptoSuite = hfc.newCryptoSuite();
+    cryptoSuite.setCryptoKeyStore(hfc.newCryptoKeyStore({path: testUtil.storePathForOrg(Nid, orgName)}));
+    client.setCryptoSuite(cryptoSuite);
+
+    chainAddOrderer(channel, client, org);
+
+    channelAddQIPeer(channel, client, qOrg, qPeer);
+    var qPromises = [];
+
+    return Client.newDefaultKeyValueStore({
+        path: testUtil.storePathForOrg(orgName)
+    }).then( function (store) {
+        client.setStateStore(store);
+        return testUtil.getSubmitter(username, secret, client, true, Nid, org, svcFile);
+    }).then((admin) => {
+        logger.info('[queryBlockchainInfo] Successfully enrolled user \'admin\'');
+        the_user = admin;
+
+        return channel.initialize();
+    }).then((success) => {
+        logger.info('[queryBlockchainInfo] Successfully initialized channel');
+        return channel.queryInfo();
+    }).then((blockchainInfo) => {
+        var blockHeight = blockchainInfo.height - 1;
+        logger.info('[queryBlockchainInfo] Channel queryInfo() returned block height='+blockchainInfo.height);
+        if ( eBlock > blockHeight ) {
+            logger.info('[queryBlockchainInfo] eBlock:block height = %d:%d', eBlock, blockHeight);
+            logger.info('[queryBlockchainInfo] reset eBlock to block height');
+            eBlock = blockHeight;
+        }
+        //var block;
+
+        var qBlks = [];
+        for (i = sBlock; i <= eBlock; i++) {
+            qBlks.push(parseInt(i));
+        }
+
+        var qi = 0;
+        var qb = null;
+        var previousBlockQueryFlag=true;
+        var qBlksIndex=0;
+        var totalLength=0;
+
+        oneBlockQueryWithNext(channel,sBlock,eBlock);
+
+
+
+        /*****
+        for (var qBlksIndex=0; qBlksIndex<qBlks.length;qBlksIndex++) {
+        co(function* () {
+
+                qb = yield  new Promise(function (resolve, reject) {
+                    resolve(channel.queryBlock(qBlks[qBlksIndex]));
+                }).then(function (block) {
+                    logger.info('\n[queryBlockchainInfo] Current Block NO.=%s,  %s transaction in this block ', block.header.number, block.data.data.length);
+                   // previousBlockQueryFlag = true;
+
+                });
+
+        });
+        };
+         ****/
+
+    }).catch((err) => {
+        throw new Error(err.stack ? err.stack : err);
+    });
+
+
+}
+
+
+
 
 function performance_main() {
     var channelCreated = 0;
@@ -1214,6 +1652,10 @@ function performance_main() {
             logger.info('[performance_main] channel name: ', channelName);
             queryBlockchainInfo(channel, client, org);
         } else if ( transType.toUpperCase() == 'INVOKE' ) {
+            var channel = client.newChannel(channelName);
+            var beginHeight={};
+            chanelInitialize(channel, client, org,beginHeight);
+            logger.error("\n Befor invoke the block height= ",beginHeight);
             // spawn off processes for transactions
             for (var j = 0; j < nProcPerOrg; j++) {
                 var workerProcess = child_process.spawn('node', ['./pte-execRequest.js', j, Nid, uiFile, tStart, org, PTEid]);
@@ -1349,6 +1791,20 @@ function performance_main() {
                             logger.info("Test Summary:Total mixed transaction=%d, the Min duration is %d ms,the Max duration is %d ms,Avg duration=%d ms, total throughput=%d TPS", totalMixedInvoke+totalMixedQuery , minMixedDuration, maxMixedDuration, (totalMixedTime)/(procDone),(totalMixedTPS).toFixed(2));
                         }
                         logger.info('[performance_main] pte-main:completed:');
+
+                        //var channel = client.newChannel(channelName);
+                        var endHeight={};
+                        //queryCurrentBlockHeight(channel, client, org,endHeight);
+
+                        queryCurrentBlockHeight(channel, client, org,endHeight).then((blockchainInfo) => {
+                             endHeight.value = blockchainInfo.height - 1;
+                            logger.info('Current block heightxxxxxxxx=' + blockchainInfo.height);
+
+                            logger.error("\n =====Befor invoke the block height=%d, end block height=%d ",beginHeight.value,endHeight.value );
+                            oneBlockQueryWithNext(channel,beginHeight.value,endHeight.value);
+
+
+                        });
 
                     }
 
