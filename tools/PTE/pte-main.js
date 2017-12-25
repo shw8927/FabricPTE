@@ -135,6 +135,35 @@ var qPeer ;
 
 var testSummaryArray=[];
 
+var mainMeasureFile;
+
+Date.prototype.Format = function (fmt) { //author: meizz
+    var o = {
+        "M+": this.getMonth() + 1, //月份
+        "d+": this.getDate(), //日
+        "h+": this.getHours(), //小时
+        "m+": this.getMinutes(), //分
+        "s+": this.getSeconds(), //秒
+        "q+": Math.floor((this.getMonth() + 3) / 3), //季度
+        "S": this.getMilliseconds() //毫秒
+    };
+    if (/(y+)/.test(fmt)) fmt = fmt.replace(RegExp.$1, (this.getFullYear() + "").substr(4 - RegExp.$1.length));
+    for (var k in o)
+        if (new RegExp("(" + k + ")").test(fmt)) fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
+    return fmt;
+}
+
+mainMeasureFile ="PTEM_Main_"+((new Date()).Format("yyyyMMddhhmmss"))+"_"+".csv";
+function appendMainMeasurement(bufferx){
+
+    fs.appendFileSync(mainMeasureFile, bufferx,  { encoding: 'utf8', mode: 438, flag: 'a' } );
+    /*{
+        if (err) {
+            return logger.error(err);
+        }
+    })*/
+}
+
 function printChainInfo(channel) {
     logger.info('[printChainInfo] channel name: ', channel.getName());
     logger.info('[printChainInfo] orderers: ', channel.getOrderers());
@@ -1273,8 +1302,8 @@ var endTimestamp4QueryBlock=0;
 var totalSuccessTxNum=0;
 var totalFailedTxNum=0;
 function getBlockDetail(block) {
-    logger.info("\n********Block information ***********");
-    logger.info('\n[queryBlockchainInfo] Current Block NO.=%s,  %s transaction in this block ', block.header.number, block.data.data.length);
+  //  logger.info("\n********Block information ***********");
+  //  logger.info('\n[queryBlockchainInfo] Current Block NO.=%s,  %s transaction in this block ', block.header.number, block.data.data.length);
     var endorserTxNum=0;
     var nonEndorserTxNum=0;
     var succEndorserTxNum=0;
@@ -1324,6 +1353,7 @@ function getBlockDetail(block) {
             var tx_idStr = block.data.data[i].payload.header.channel_header.tx_id;
             var epochInt = block.data.data[i].payload.header.channel_header.epoch;
             var val_code = block.metadata.metadata[2][i];
+            var endorsementArray= block.data.data[i].payload.data.actions[0].payload.action.endorsements;
             var tmpChainCodeStr="";
 
 
@@ -1334,10 +1364,14 @@ function getBlockDetail(block) {
                     if ( chainCodeMap4BlockMap.has(tmpChainCodeStr)){
                         var tmpChainCodeObject=chainCodeMap4BlockMap.get(tmpChainCodeStr)
                         tmpChainCodeObject.transactionNum =tmpChainCodeObject.transactionNum + 1;
+                        tmpChainCodeObject.payloadInputSize=tx_input.length;
+                        tmpChainCodeObject.endorserNumber=endorsementArray.length;
                         chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
                     }else {
                         var tmpChainCodeObject = {};
                         tmpChainCodeObject.transactionNum = 1;
+                        tmpChainCodeObject.payloadInputSize=tx_input.length;
+                        tmpChainCodeObject.endorserNumber=endorsementArray.length;
                         chainCodeMap4BlockMap.set(tmpChainCodeStr,tmpChainCodeObject);
                     }
 
@@ -1391,27 +1425,44 @@ function oneBlockQueryWithNext(channel,startBlockNumber, endBlockNumber) {
         }
         if (startBlockNumber>endBlockNumber){
 
-            logger.info("\n==============Total summary 12345============================\n");
-            logger.info('\n[queryBlockchainInfo] start blocks= %d: end block=%d, totalLength=%d ,\n startTime =%s, end Time=%s, \n totalInterval=%s MS ,successful TxNum=%d, failed TxNum=%d',
+           // logger.info("\n==============Total summary 12345============================\n");
+            var buffer=util.format('\n[queryBlockchainInfo] start blocks= %d: end block=%d, totalLength=%d ,\n startTime =%s, end Time=%s, \n totalInterval=%s MS ,successful TxNum=%d, failed TxNum=%d',
                 startBlockNumber, endBlockNumber, totalLength,startTimestamp4QueryBlock,endTimestamp4QueryBlock,(new Date(endTimestamp4QueryBlock).getTime())-  (new Date(startTimestamp4QueryBlock).getTime()),totalSuccessTxNum,totalFailedTxNum);
+
+            logger.info(buffer);
+            appendMainMeasurement(buffer);
 
             for (var [key, value] of chainCodeMap4BlockMap) {
 
                 var buffer = util.format("\n Chaincode=%s"
-                    + " ,TransactionNum=%s"
+                    + " ,TransactionNum=%s ,payloadInputSize=%s, endorserNumber=%s"
                     , key
-                    , value.transactionNum);
-                logger.info(buffer);
+                    , value.transactionNum
+                    ,value.payloadInputSize
+                    ,value.endorserNumber);
+                logger.info("XXXXXXXXXX"+buffer);
+                appendMainMeasurement(buffer);
             }
 
+            appendMainMeasurement("\nCommitted Transaction TPS from ledger");
+            var commitTimeBuffer="\nTimeStamp";
+            var commitTpsBuffer="\nTPSonTime";
+
             for (var [key, value] of responseTimeTPSMap) {
+
+               // commitTimeBuffer=commitTimeBuffer.concat(",",key);
+                commitTimeBuffer=commitTimeBuffer.concat(",",(new Date(key).Format("hh:mm:ss")));
+                commitTpsBuffer=commitTpsBuffer.concat(",",(value));
 
                 var buffer = util.format("\n Timestamp=%s"
                     + " ,Transaction=%s"
                     , key
                     , value);
-                   logger.info(buffer);
+                //   logger.info(buffer);
+
             }
+            appendMainMeasurement(commitTimeBuffer);
+            appendMainMeasurement(commitTpsBuffer);
 
         }
 
@@ -1711,7 +1762,9 @@ function performance_main() {
 
                         for (summaryIndex in testSummaryArray ) {
                             var rawText=testSummaryArray[summaryIndex].toString();
-                            logger.info('Test Summary[%d]: %s',summaryIndex, rawText.substring(rawText.indexOf("[Nid")));
+                            var buffer=util.format('\nTest Summary[%d]: %s',summaryIndex, rawText.substring(rawText.indexOf("[Nid")));
+                            logger.info(buffer);
+                            appendMainMeasurement(buffer);
                             if (rawText.indexOf("execTransMode")>-1) {
                                 logger.info("ERROR occurred:" +rawText);
                                 continue;
@@ -1792,6 +1845,17 @@ function performance_main() {
                         }
                         logger.info('[performance_main] pte-main:completed:');
 
+                        var buffer=util.format("Test Summary: Total %d Threads run completed",procDone);
+
+                       var buffer=util.format("\nTest Summary:Total INVOKE transaction=%d, timeout transaction=%d, the Min duration is %d ms,the Max duration is %d ms,Avg duration=%d ms, total throughput=%d TPS", totalInvokeTrans, totalInvokeTimeout, minInvokeDuration, maxInvokeDuration,totalInvokeTime/procDone, totalInvokeTps.toFixed(2));
+
+                        appendMainMeasurement(buffer);
+                        var buffer=util.format("\nTest Summary:Total  QUERY transaction=%d, the Min duration is %d ms,the Max duration is %d ms,Avg duration=%d ms, total throughput=%d TPS", totalQueryTrans, minQueryDuration, maxQueryDuration, totalQueryTime/procDone,totalQueryTps.toFixed(2));
+
+                        appendMainMeasurement(buffer);
+                        var buffer=util.format("\nTest Summary:Total mixed transaction=%d, the Min duration is %d ms,the Max duration is %d ms,Avg duration=%d ms, total throughput=%d TPS", totalMixedInvoke+totalMixedQuery , minMixedDuration, maxMixedDuration, (totalMixedTime)/(procDone),(totalMixedTPS).toFixed(2));
+                        appendMainMeasurement(buffer);
+                        appendMainMeasurement('\n[performance_main] pte-main:completed:');
                         //var channel = client.newChannel(channelName);
                         var endHeight={};
                         //queryCurrentBlockHeight(channel, client, org,endHeight);
